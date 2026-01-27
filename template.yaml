@@ -1,0 +1,35 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Tech Challenge Fase 4 - Quarkus Feedback
+
+Resources:
+  # Base de Dados
+  FeedbackTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      PrimaryKey: {Name: id, Type: String}
+      TableName: Feedback
+
+  # Função de Ingestão
+  FeedbackFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: io.quarkus.amazon.lambda.runtime.QuarkusStreamHandler::handleRequest
+      Runtime: java21
+      # CORREÇÃO: Apontar para o pacote otimizado gerado pelo Quarkus
+      CodeUri: target/function.zip 
+      MemorySize: 512
+      Timeout: 30
+      Policies:
+        - DynamoDBCrudPolicy: {TableName: Feedback}
+      Events:
+        AvaliacaoApi:
+          Type: Api
+          Properties:
+            Path: /avaliacao
+            Method: post
+
+Outputs:
+  FeedbackApi:
+    Description: "URL oficial da API"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/avaliacao/"
