@@ -1,25 +1,39 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Tech Challenge Fase 4 - Quarkus Feedback
+Description: Tech Challenge Fase 4 - Quarkus Feedback & Notificações
 
 Resources:
-  # Base de Dados
+  # 1. Base de Dados (Versão Completa para suportar Streams)
   FeedbackTable:
-    Type: AWS::Serverless::SimpleTable
+    Type: AWS::DynamoDB::Table
     Properties:
-      PrimaryKey: {Name: id, Type: String}
       TableName: Feedback
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      # Habilita o Stream para que a função de notificação seja disparada
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
 
-  # Função de Ingestão
+  # 2. Função de Ingestão (Recebe o POST da API)
   FeedbackFunction:
     Type: AWS::Serverless::Function
     Properties:
       Handler: io.quarkus.amazon.lambda.runtime.QuarkusStreamHandler::handleRequest
       Runtime: java21
-      # CORREÇÃO: Apontar para o pacote otimizado gerado pelo Quarkus
-      CodeUri: target/function.zip 
+      CodeUri: target/function.zip
       MemorySize: 512
       Timeout: 30
+      Environment:
+        Variables:
+          # Indica ao Quarkus para usar a classe com @Named("ingestao")
+          QUARKUS_LAMBDA_HANDLER: feedback
       Policies:
         - DynamoDBCrudPolicy: {TableName: Feedback}
       Events:
@@ -29,7 +43,49 @@ Resources:
             Path: /avaliacao
             Method: post
 
+  # 3. Função de Notificação (Responsabilidade Única - Disparada pelo Banco)
+  NotificacaoFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: io.quarkus.amazon.lambda.runtime.QuarkusStreamHandler::handleRequest
+      Runtime: java21
+      CodeUri: target/function.zip
+      MemorySize: 512
+      Timeout: 30
+      Environment:
+        Variables:
+          # Indica ao Quarkus para usar a classe com @Named("notificacao")
+          QUARKUS_LAMBDA_HANDLER: notificacao
+      Events:
+        FeedbackStream:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt FeedbackTable.StreamArn
+            StartingPosition: TRIM_HORIZON
+            BatchSize: 1
+
+  RelatorioFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: io.quarkus.amazon.lambda.runtime.QuarkusStreamHandler::handleRequest
+      Runtime: java21
+      CodeUri: target/function.zip
+      MemorySize: 512
+      Timeout: 60
+      Environment:
+        Variables:
+          QUARKUS_LAMBDA_HANDLER: relatorio # Identificador para o Java
+      Policies:
+        - DynamoDBReadPolicy: {TableName: Feedback} # Permissão apenas de leitura
+      Events:
+        DisparoSemanal:
+          Type: Schedule
+          Properties:
+            # Exemplo: Dispara toda segunda-feira às 09:00 UTC
+            Schedule: cron(0 9 ? * MON *) 
+            Description: "Geração agendada do relatório de feedbacks"
+
 Outputs:
   FeedbackApi:
-    Description: "URL oficial da API"
+    Description: "URL da API para testar o endpoint POST /avaliacao"
     Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/avaliacao/"

@@ -1,28 +1,35 @@
 package org.acme.lambda;
 
-import jakarta.enterprise.context.ApplicationScoped;
+import com.amazonaws.services.lambda.runtime.Context;
+import com.amazonaws.services.lambda.runtime.RequestHandler;
+import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyRequestEvent;
+import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyResponseEvent;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.inject.Inject;
-import jakarta.ws.rs.*;
-import jakarta.ws.rs.core.MediaType;
-import jakarta.ws.rs.core.Response;
+import jakarta.inject.Named;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
+
 import java.util.Map;
 import java.util.UUID;
 
-@Path("/avaliacao")
-@ApplicationScoped
-@Produces(MediaType.APPLICATION_JSON)
-@Consumes(MediaType.APPLICATION_JSON)
-public class FeedbackLambda {
+@Named("feedback")
+public class FeedbackLambda implements RequestHandler<APIGatewayProxyRequestEvent, APIGatewayProxyResponseEvent> {
 
     @Inject
     DynamoDbClient dynamoDb;
 
-    @POST
-    public Response salvarFeedback(Feedback input) {
+    @Inject
+    ObjectMapper mapper;
+
+    @Override
+    public APIGatewayProxyResponseEvent handleRequest(APIGatewayProxyRequestEvent event, Context context) {
         try {
+            // 1. Extrair e converter o corpo da String para o objeto Feedback
+            Feedback input = mapper.readValue(event.getBody(), Feedback.class);
+
+            // 2. Lógica de persistência (mantém-se igual)
             Map<String, AttributeValue> item = Map.of(
                     "id", AttributeValue.builder().s(UUID.randomUUID().toString()).build(),
                     "descricao", AttributeValue.builder().s(input.getDescricao()).build(),
@@ -35,13 +42,15 @@ public class FeedbackLambda {
                     .item(item)
                     .build());
 
-            return Response.status(Response.Status.CREATED)
-                    .entity("{\"mensagem\": \"Feedback salvo com sucesso!\"}")
-                    .build();
+            // 3. Retornar resposta no formato que o API Gateway exige
+            return new APIGatewayProxyResponseEvent()
+                    .withStatusCode(201)
+                    .withBody("{\"mensagem\": \"Feedback salvo com sucesso!\"}");
+
         } catch (Exception e) {
-            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
-                    .entity("{\"erro\": \"" + e.getMessage() + "\"}")
-                    .build();
+            return new APIGatewayProxyResponseEvent()
+                    .withStatusCode(500)
+                    .withBody("{\"erro\": \"" + e.getMessage() + "\"}");
         }
     }
 }
