@@ -1,9 +1,9 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Tech Challenge Fase 4 - Quarkus Feedback & Notificações
+Description: Tech Challenge Fase 4 - Sistema de Feedback Completo
 
 Resources:
-  # 1. Base de Dados (Versão Completa para suportar Streams)
+  # 1. Base de Dados
   FeedbackTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -17,11 +17,18 @@ Resources:
       ProvisionedThroughput:
         ReadCapacityUnits: 5
         WriteCapacityUnits: 5
-      # Habilita o Stream para que a função de notificação seja disparada
       StreamSpecification:
         StreamViewType: NEW_IMAGE
 
-  # 2. Função de Ingestão (Recebe o POST da API)
+  # 2. Tópico de Notificações (SNS)
+  AlertaCriticoTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Endpoint: "humbertofernandes08@hotmail.com"
+          Protocol: email
+
+  # 3. Função de Ingestão (API Gateway)
   FeedbackFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -32,7 +39,6 @@ Resources:
       Timeout: 30
       Environment:
         Variables:
-          # Indica ao Quarkus para usar a classe com @Named("ingestao")
           QUARKUS_LAMBDA_HANDLER: feedback
       Policies:
         - DynamoDBCrudPolicy: {TableName: Feedback}
@@ -43,19 +49,24 @@ Resources:
             Path: /avaliacao
             Method: post
 
-  # 3. Função de Notificação (Responsabilidade Única - Disparada pelo Banco)
+  # 4. Função de Notificação (Gatilho DynamoDB)
   NotificacaoFunction:
     Type: AWS::Serverless::Function
     Properties:
       Handler: io.quarkus.amazon.lambda.runtime.QuarkusStreamHandler::handleRequest
       Runtime: java21
       CodeUri: target/function.zip
-      MemorySize: 512
       Timeout: 30
       Environment:
         Variables:
-          # Indica ao Quarkus para usar a classe com @Named("notificacao")
           QUARKUS_LAMBDA_HANDLER: notificacao
+          TOPICO_ALERTA_ARN: !Ref AlertaCriticoTopic
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: sns:Publish
+              Resource: !Ref AlertaCriticoTopic
       Events:
         FeedbackStream:
           Type: DynamoDB
@@ -64,6 +75,7 @@ Resources:
             StartingPosition: TRIM_HORIZON
             BatchSize: 1
 
+  # 5. Função de Relatório (Agendada)
   RelatorioFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -74,18 +86,22 @@ Resources:
       Timeout: 60
       Environment:
         Variables:
-          QUARKUS_LAMBDA_HANDLER: relatorio # Identificador para o Java
+          QUARKUS_LAMBDA_HANDLER: relatorio
+          TOPICO_ALERTA_ARN: !Ref AlertaCriticoTopic
       Policies:
-        - DynamoDBReadPolicy: {TableName: Feedback} # Permissão apenas de leitura
+        - DynamoDBReadPolicy: {TableName: Feedback}
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: sns:Publish
+              Resource: !Ref AlertaCriticoTopic
       Events:
-        DisparoSemanal:
+        ScheduleEvent:
           Type: Schedule
           Properties:
-            # Exemplo: Dispara toda segunda-feira às 09:00 UTC
-            Schedule: cron(0 9 ? * MON *) 
-            Description: "Geração agendada do relatório de feedbacks"
+            Schedule: cron(0 9 ? * MON *) # Toda segunda-feira às 09h UTC
 
 Outputs:
   FeedbackApi:
-    Description: "URL da API para testar o endpoint POST /avaliacao"
+    Description: "URL para o POST de feedbacks"
     Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/avaliacao/"

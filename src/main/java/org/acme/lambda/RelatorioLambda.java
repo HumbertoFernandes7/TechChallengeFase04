@@ -16,11 +16,14 @@ public class RelatorioLambda implements RequestHandler<Map<String, Object>, Stri
     @Inject
     DynamoDbClient dynamoDb;
 
+    @Inject
+    SnsService snsService;
+
     @Override
     public String handleRequest(Map<String, Object> event, Context context) {
         ScanResponse response = dynamoDb.scan(ScanRequest.builder().tableName("Feedback").build());
 
-        // 1. Contagem por Urgência (Ex: 0-3 Crítico, 4-7 Médio, 8-10 Bom)
+        // 1. Contagem por Urgência
         Map<String, Long> porUrgencia = response.items().stream()
                 .collect(Collectors.groupingBy(item -> {
                     int nota = Integer.parseInt(item.get("nota").n());
@@ -34,20 +37,28 @@ public class RelatorioLambda implements RequestHandler<Map<String, Object>, Stri
                 .collect(Collectors.groupingBy(item ->
                         item.get("dataEnvio").s().substring(0, 10), Collectors.counting()));
 
-        // 3. Montagem do corpo do relatório conforme o PDF
-        StringBuilder sb = new StringBuilder("=== RELATÓRIO DE FEEDBACKS ===\n\n");
-        sb.append("RESUMO POR URGÊNCIA:\n").append(porUrgencia).append("\n\n");
-        sb.append("RESUMO POR DIA:\n").append(porDia).append("\n\n");
-        sb.append("DETALHES:\n");
+        double mediaAvaliacoes = response.items().stream()
+                .mapToInt(item -> Integer.parseInt(item.get("nota").n()))
+                .average()
+                .orElse(0.0);
 
+        // 3. Gerar o relatório em formato de texto
+        StringBuilder relatorio = new StringBuilder("=== RELATÓRIO SEMANAL DE SATISFAÇÃO ===\n\n");
+        relatorio.append("📊 RESUMO ESTATÍSTICO:\n");
+        relatorio.append("Quantidade por Urgência: ").append(porUrgencia).append("\n");
+        relatorio.append("Quantidade por Dia: ").append(porDia).append("\n\n");
+        relatorio.append("Media avaliações: ").append(mediaAvaliacoes).append("\n\n");
+
+        relatorio.append("📋 LISTAGEM DETALHADA:\n");
         response.items().forEach(item -> {
-            sb.append(String.format("- [%s] Urgência: %s | Descrição: %s\n",
+            String urgencia = Integer.parseInt(item.get("nota").n()) <= 3 ? "ALTA" : "NORMAL";
+            relatorio.append(String.format("- [%s] Urgência: %s | Descrição: %s\n",
                     item.get("dataEnvio").s(),
-                    Integer.parseInt(item.get("nota").n()) <= 3 ? "ALTA" : "BAIXA",
+                    urgencia,
                     item.get("descricao").s()));
         });
 
-        System.out.println(sb.toString());
+        snsService.enviarMensagem("Tech Challenge - Relatório Semanal de Feedbacks", relatorio.toString());
         return "Relatório gerado com sucesso";
     }
 }
