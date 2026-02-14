@@ -1,68 +1,186 @@
-# code-with-quarkus
+# Tech Challenge Fase 4 — Sistema de Feedback com Quarkus + AWS Lambda
 
-This project uses Quarkus, the Supersonic Subatomic Java Framework.
+Projeto serverless em **Java 21** com **Quarkus**, composto por três funções Lambda integradas para:
 
-If you want to learn more about Quarkus, please visit its website: <https://quarkus.io/>.
+1. receber feedbacks via API,
+2. notificar automaticamente feedbacks críticos,
+3. gerar relatório semanal consolidado.
 
-## Running the application in dev mode
+A infraestrutura é definida com **AWS SAM** (`template.yaml`) e utiliza **DynamoDB** e **SNS**.
 
-You can run your application in dev mode that enables live coding using:
+---
 
-```shell script
-./mvnw quarkus:dev
+## Arquitetura
+
+### Fluxo principal
+
+1. **API Gateway** recebe `POST /avaliacao`.
+2. **FeedbackLambda** (`QUARKUS_LAMBDA_HANDLER=feedback`) valida o payload e salva no DynamoDB (`Feedback`).
+3. A inserção na tabela dispara evento de **DynamoDB Stream**.
+4. **NotificacaoLambda** (`QUARKUS_LAMBDA_HANDLER=notificacao`) verifica a nota e, se crítica (`<= 3`), publica alerta no SNS.
+5. Semanalmente, via `cron`, a **RelatorioLambda** (`QUARKUS_LAMBDA_HANDLER=relatorio`) faz scan da tabela, calcula estatísticas e envia relatório por SNS.
+
+### Componentes
+
+- **Tabela DynamoDB:** `Feedback`
+- **Tópico SNS:** `AlertaCriticoTopic`
+- **Lambdas Quarkus:**
+  - `feedback` → `org.acme.lambda.FeedbackLambda`
+  - `notificacao` → `org.acme.lambda.NotificacaoLambda`
+  - `relatorio` → `org.acme.lambda.RelatorioLambda`
+- **Serviço compartilhado:** `org.acme.lambda.SnsService`
+
+---
+
+## Estrutura do projeto
+
+```text
+src/main/java/org/acme/lambda/
+├── Feedback.java
+├── FeedbackLambda.java
+├── NotificacaoLambda.java
+├── RelatorioLambda.java
+└── SnsService.java
+
+src/main/resources/
+└── application.properties
+
+template.yaml
+pom.xml
 ```
 
-> **_NOTE:_**  Quarkus now ships with a Dev UI, which is available in dev mode only at <http://localhost:8080/q/dev/>.
+---
 
-## Packaging and running the application
+## Pré-requisitos
 
-The application can be packaged using:
+- Java **21**
+- Maven (ou usar `./mvnw`)
+- AWS CLI configurado (para deploy)
+- AWS SAM CLI (para `sam build/deploy`)
 
-```shell script
-./mvnw package
+---
+
+## Build do projeto
+
+Gerar artefatos Quarkus/Lambda:
+
+```bash
+./mvnw clean package
 ```
 
-It produces the `quarkus-run.jar` file in the `target/quarkus-app/` directory.
-Be aware that it’s not an _über-jar_ as the dependencies are copied into the `target/quarkus-app/lib/` directory.
+Para empacotamento Lambda (ZIP em `target/function.zip`):
 
-The application is now runnable using `java -jar target/quarkus-app/quarkus-run.jar`.
-
-If you want to build an _über-jar_, execute the following command:
-
-```shell script
-./mvnw package -Dquarkus.package.jar.type=uber-jar
+```bash
+./mvnw package -DskipTests
 ```
 
-The application, packaged as an _über-jar_, is now runnable using `java -jar target/*-runner.jar`.
+> O `template.yaml` espera `CodeUri: target/function.zip`.
 
-## Creating a native executable
+---
 
-You can create a native executable using:
+## Deploy com AWS SAM
 
-```shell script
-./mvnw package -Dnative
+### 1) Build SAM
+
+```bash
+sam build
 ```
 
-Or, if you don't have GraalVM installed, you can run the native executable build in a container using:
+### 2) Deploy guiado (primeira vez)
 
-```shell script
-./mvnw package -Dnative -Dquarkus.native.container-build=true
+```bash
+sam deploy --guided
 ```
 
-You can then execute your native executable with: `./target/code-with-quarkus-1.0.0-SNAPSHOT-runner`
+### 3) Deploy usando configurações salvas
 
-If you want to learn more about building native executables, please consult <https://quarkus.io/guides/maven-tooling>.
+```bash
+sam deploy
+```
 
-## Related Guides
+Após o deploy, a URL da API será exibida no output `FeedbackApi`.
 
-- AWS Lambda ([guide](https://quarkus.io/guides/aws-lambda)): Write AWS Lambda functions
+---
 
-## Provided Code
+## Endpoint de ingestão
 
-### Amazon Lambda Integration example
+### `POST /avaliacao`
 
-This example contains a Quarkus Greeting Lambda ready for Amazon.
+Exemplo de payload:
 
-[Related guide section...](https://quarkus.io/guides/aws-lambda)
+```json
+{
+  "descricao": "Aplicativo travou ao finalizar pedido",
+  "nota": 2
+}
+```
 
+Resposta de sucesso (`201`):
+
+```json
+{"mensagem": "Feedback salvo com sucesso!"}
+```
+
+Resposta de erro (`500`):
+
+```json
+{"erro": "<detalhe do erro>"}
+```
+
+### Exemplo com cURL
+
+```bash
+curl -X POST "https://<api-id>.execute-api.<regiao>.amazonaws.com/Prod/avaliacao" \
+  -H "Content-Type: application/json" \
+  -d '{"descricao":"Muito lento no login","nota":3}'
+```
+
+---
+
+## Regras de negócio implementadas
+
+- `FeedbackLambda`
+  - Persiste `id`, `descricao`, `nota`, `dataEnvio` na tabela `Feedback`.
+- `NotificacaoLambda`
+  - Processa apenas eventos `INSERT` do stream.
+  - Envia alerta SNS para feedback com `nota <= 3`.
+- `RelatorioLambda`
+  - Executa semanalmente (segunda, 09:00 UTC).
+  - Consolida:
+    - quantidade por urgência (`CRÍTICO`, `MÉDIO`, `NORMAL`),
+    - quantidade por dia,
+    - média das avaliações,
+    - listagem detalhada.
+  - Envia relatório via SNS.
+
+---
+
+## Variáveis de ambiente relevantes
+
+Definidas no `template.yaml`:
+
+- `QUARKUS_LAMBDA_HANDLER`
+  - Seleciona qual handler nomeado será executado (`feedback`, `notificacao`, `relatorio`).
+- `TOPICO_ALERTA_ARN`
+  - ARN do tópico SNS para alertas/relatórios.
+
+---
+
+## Observações
+
+- O e-mail inscrito no tópico SNS precisa ser confirmado para receber notificações.
+- A tabela DynamoDB está com throughput provisionado no template (5 RCUs / 5 WCUs).
+- O cron está em UTC: `cron(0 9 ? * MON *)`.
+
+---
+
+## Tecnologias
+
+- Quarkus 3
+- AWS Lambda
+- AWS API Gateway
+- AWS DynamoDB + Streams
+- AWS SNS
+- AWS SAM
+- Java 21
 
