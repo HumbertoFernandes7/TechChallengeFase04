@@ -1,8 +1,8 @@
 package org.acme.lambda;
 
 public class Feedback {
-    private String descricao; // Requisito: string [cite: 35]
-    private int nota;        // Requisito: int (0 a 10) [cite: 36]
+    private String descricao;
+    private int nota;        
 
     public String getDescricao() { return descricao; }
     public void setDescricao(String descricao) { this.descricao = descricao; }
